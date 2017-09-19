@@ -16,8 +16,27 @@ type ViewServer struct {
 	rpccount int32 // for testing
 	me       string
 
-
 	// Your declarations here.
+	pingFromServers map[string](time.Time)
+	currentView     View
+	ackPrimary      int
+}
+
+func (vs *ViewServer) print_current_view() {
+	if vs.currentView == nil {
+		fmt.Printf("nil view in current view")
+	} else {
+		fmt.Printf("current view: viewNum: %d, Primary: %s, Backup: %s",
+			vs.currentView.Viewnum, vs.currentView.Primary, vs.currentView.Backup)
+	}
+}
+
+func (vs *ViewServer) create_new_view(newViewNum uint, newPrimary, newBackup string) (view *View) {
+	view = new(View)
+	view.Viewnum = newViewNum
+	view.Primary = newPrimary
+	view.Backup = newBackup
+	return
 }
 
 //
@@ -39,7 +58,6 @@ func (vs *ViewServer) Get(args *GetArgs, reply *GetReply) error {
 
 	return nil
 }
-
 
 //
 // tick() is called once per PingInterval; it should notice
