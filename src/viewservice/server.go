@@ -18,25 +18,34 @@ type ViewServer struct {
 
 	// Your declarations here.
 	pingFromServers map[string](time.Time)
-	currentView     View
-	ackPrimary      int
+	view            View
+	ackPrimary      uint
 }
 
-func (vs *ViewServer) print_current_view() {
-	if vs.currentView == nil {
-		fmt.Printf("nil view in current view")
-	} else {
-		fmt.Printf("current view: viewNum: %d, Primary: %s, Backup: %s",
-			vs.currentView.Viewnum, vs.currentView.Primary, vs.currentView.Backup)
+// for testing
+const Debug = 0
+
+func DebugPrint(format string, a ...interface{}) {
+	if Debug == 1 {
+		fmt.Printf(format, a...)
 	}
 }
 
-func (vs *ViewServer) create_new_view(newViewNum uint, newPrimary, newBackup string) (view *View) {
+func (vs *ViewServer) printView() {
+	DebugPrint("current view: viewNum: %d, Primary: %s, Backup: %s\n",
+		vs.view.Viewnum, vs.view.Primary, vs.view.Backup)
+}
+
+func (vs *ViewServer) createNewView(newViewNum uint, newPrimary, newBackup string) (view *View) {
 	view = new(View)
 	view.Viewnum = newViewNum
 	view.Primary = newPrimary
 	view.Backup = newBackup
 	return
+}
+
+func (vs *ViewServer) IsAcked() bool {
+	return vs.ackPrimary == vs.view.Viewnum
 }
 
 //
@@ -45,6 +54,51 @@ func (vs *ViewServer) create_new_view(newViewNum uint, newPrimary, newBackup str
 func (vs *ViewServer) Ping(args *PingArgs, reply *PingReply) error {
 
 	// Your code here.
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+
+	client, clientViewnum := args.Me, args.Viewnum
+
+	DebugPrint("----------\nCurrent view: viewNum: %d, Primary: %s, Backup: %s\n",
+		vs.view.Viewnum, vs.view.Primary, vs.view.Backup)
+	DebugPrint("Ping from KV server. View: %d, from: %s\n", vs.view.Viewnum, client)
+	vs.printView()
+
+	// upon very start, set first server as primary
+	if clientViewnum == 0 && vs.view.Primary == "" {
+		vs.view.Primary = client
+		vs.view.Viewnum++
+		// newv := vs.view.Viewnum + 1
+		// vs.createNewView(newv, client, "")
+		vs.pingFromServers[vs.view.Primary] = time.Now()
+		vs.ackPrimary = 0
+	} else if vs.view.Primary == client {
+		// Ping from primary
+		// if primary has just restarted: promote backup to primary
+		if clientViewnum == 0 {
+			// newv := vs.view.Viewnum + 1
+			// vs.createNewView(newv, vs.view.Backup, "")
+			// vs.view.Backup = client
+			vs.view.Primary = vs.view.Backup
+			vs.view.Backup = client
+			vs.view.Viewnum++
+		} else {
+			// primary in normal case
+			vs.ackPrimary = clientViewnum
+			vs.pingFromServers[vs.view.Primary] = time.Now()
+		}
+	} else if vs.view.Backup == "" && vs.IsAcked() {
+		// Ping from an idle server
+		// if no bakcup and a new server shows up, make it backup
+		vs.view.Backup = client
+		vs.view.Viewnum++
+		vs.pingFromServers[vs.view.Backup] = time.Now()
+	} else if vs.view.Backup == client {
+		// Ping from Backup in normal case
+		vs.pingFromServers[vs.view.Backup] = time.Now()
+	}
+
+	reply.View = vs.view
 
 	return nil
 }
@@ -55,6 +109,10 @@ func (vs *ViewServer) Ping(args *PingArgs, reply *PingReply) error {
 func (vs *ViewServer) Get(args *GetArgs, reply *GetReply) error {
 
 	// Your code here.
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+
+	reply.View = vs.view
 
 	return nil
 }
@@ -67,6 +125,23 @@ func (vs *ViewServer) Get(args *GetArgs, reply *GetReply) error {
 func (vs *ViewServer) tick() {
 
 	// Your code here.
+	vs.mu.Lock()
+	vs.mu.Unlock()
+
+	duration := time.Now().Sub(vs.pingFromServers[vs.view.Primary])
+	is_primary_dead := duration > PingInterval*DeadPings
+	if is_primary_dead && vs.IsAcked() && vs.view.Primary != "" {
+		vs.view.Primary = vs.view.Backup
+		vs.view.Backup = ""
+		vs.view.Viewnum++
+	}
+	duration = time.Now().Sub(vs.pingFromServers[vs.view.Backup])
+	is_backup_dead := duration > PingInterval*DeadPings
+	if is_backup_dead && vs.IsAcked() && vs.view.Backup != "" {
+		vs.view.Backup = ""
+		vs.view.Viewnum++
+	}
+
 }
 
 //
@@ -95,6 +170,7 @@ func StartServer(me string) *ViewServer {
 	vs := new(ViewServer)
 	vs.me = me
 	// Your vs.* initializations here.
+	vs.pingFromServers = make(map[string](time.Time))
 
 	// tell net/rpc about our RPC server and handlers.
 	rpcs := rpc.NewServer()
