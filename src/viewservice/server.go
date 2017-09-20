@@ -126,7 +126,7 @@ func (vs *ViewServer) tick() {
 
 	// Your code here.
 	vs.mu.Lock()
-	vs.mu.Unlock()
+	defer vs.mu.Unlock()
 
 	duration := time.Now().Sub(vs.pingFromServers[vs.view.Primary])
 	is_primary_dead := duration > PingInterval*DeadPings
