@@ -44,6 +44,9 @@ func (vs *ViewServer) createNewView(newViewNum uint, newPrimary, newBackup strin
 	return
 }
 
+// IsAcked checks if viewservice has received ack from Primary
+// Note: the mechanism is checking whether ackPrimary==Viewnum and this
+// affects the implementation of ackPrimary update
 func (vs *ViewServer) IsAcked() bool {
 	return vs.ackPrimary == vs.view.Viewnum
 }
@@ -62,8 +65,10 @@ func (vs *ViewServer) Ping(args *PingArgs, reply *PingReply) error {
 	DebugPrint("----------\nCurrent view: viewNum: %d, Primary: %s, Backup: %s\n",
 		vs.view.Viewnum, vs.view.Primary, vs.view.Backup)
 	DebugPrint("Ping from KV server. View: %d, from: %s\n", vs.view.Viewnum, client)
+
 	vs.printView()
 
+	/* old code which I do not remember at all. Redo them.
 	// upon very start, set first server as primary
 	if clientViewnum == 0 && vs.view.Primary == "" {
 		vs.view.Primary = client
@@ -96,6 +101,43 @@ func (vs *ViewServer) Ping(args *PingArgs, reply *PingReply) error {
 	} else if vs.view.Backup == client {
 		// Ping from Backup in normal case
 		vs.pingFromServers[vs.view.Backup] = time.Now()
+	}
+	*/
+
+	// the following logic should better be implemented with if ... else if ...
+	// upon start, set the server to primary
+	if vs.view.Primary == "" && clientViewnum == 0 {
+		vs.view.Primary = client
+		vs.view.Viewnum++
+		vs.pingFromServers[client] = time.Now()
+		vs.ackPrimary = clientViewnum
+	} else if vs.view.Primary == client {
+		/*
+			If receives Ping from current primary, 2 cases:
+			1. current Primay just restarted
+			2. normal case: Primay is OK
+		*/
+		// 1. current primary just restarted, promote Backup to Primary
+		if clientViewnum == 0 {
+			vs.view.Primary = vs.view.Backup
+			vs.view.Viewnum++
+			vs.view.Backup = client
+			// we do not consider this Ping valid for ackPrimary
+			vs.ackPrimary = 0
+		} else {
+			// here is the normal case
+			vs.ackPrimary = clientViewnum
+			vs.pingFromServers[client] = time.Now()
+		}
+	} else if vs.view.Backup == "" && vs.IsAcked() {
+		// if there is no Backup and incomming client is not Primary (then it is new server)
+		// note that if not IsAcked, we cannot update view
+		vs.view.Backup = client
+		vs.view.Viewnum++
+		vs.pingFromServers[client] = time.Now()
+	} else if vs.view.Backup == client {
+		// If receives Ping from Backup
+		vs.pingFromServers[client] = time.Now()
 	}
 
 	reply.View = vs.view
